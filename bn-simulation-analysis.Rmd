@@ -1,0 +1,376 @@
+---
+title: "BN Simulation Analysis"
+author: "Christian Pascual"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r}
+library(tidyverse)
+library(wesanderson)
+
+diskpath = "simluations-v2"
+files = list.files(diskpath)
+fullpaths = paste0(diskpath, "/", files)
+
+results = tibble()
+
+for (i in 1:length(fullpaths)) {
+  
+  sim = readRDS(fullpaths[i])
+  
+  data = tibble(
+    params = str_replace(files[i], "-iter-\\d{1,2}.rds", ""),
+    n_subj = str_extract(str_extract(files[i], "F\\d{1,2}"), "\\d{1,2}"),
+    n_nodes = str_extract(str_extract(files[i], "N\\d{1,2}"), "\\d{1,2}"),
+    avg_parents = str_extract(str_extract(files[i], "A\\d{1,2}"), "\\d{1,2}"),
+    obs_per_person = str_extract(str_extract(files[i], "samp-(\\d+)"), "\\d+"),
+    n_true_edges = sum(sim[["true.dag"]])
+  ) %>% 
+    mutate(
+      naive_missing = sim[["naive.missing.edges"]] / n_true_edges,
+      me_missing = sim[["me.missing.edges"]] / n_true_edges,
+      bw_missing = sim[["bw.missing.edges"]] / n_true_edges,
+      fw_missing = sim[["fw.missing.edges"]] / n_true_edges,
+      naive_extra = sim[["naive.extra.edges"]] / n_true_edges,
+      me_extra = sim[["me.extra.edges"]] / n_true_edges,
+      bw_extra = sim[["bw.extra.edges"]] / n_true_edges,
+      fw_extra = sim[["fw.extra.edges"]] / n_true_edges,
+      naive_matchflip = sim[["naive.matchflip.edges"]] / n_true_edges,
+      me_matchflip = sim[["me.matchflip.edges"]] / n_true_edges,
+      bw_matchflip = sim[["bw.matchflip.edges"]] / n_true_edges,
+      fw_matchflip = sim[["fw.matchflip.edges"]] / n_true_edges,
+      naive_matched = sim[["naive.matched.edges"]] / n_true_edges,
+      me_matched = sim[["me.matched.edges"]] / n_true_edges,
+      bw_matched = sim[["bw.matched.edges"]] / n_true_edges,
+      fw_matched = sim[["fw.matched.edges"]] / n_true_edges,
+      naive_hamming = sim[["naive.hamming"]] / n_true_edges,
+      me_hamming = sim[["me.hamming"]] / n_true_edges,
+      bw_hamming = sim[["bw.hamming"]] / n_true_edges,
+      fw_hamming = sim[["fw.hamming"]] / n_true_edges
+    )
+  
+  results = rbind(results, data)
+  
+}
+
+write.table(results, "compiled-bn-sim-comparisons.tbl")
+results = read.table("compiled-bn-sim-comparisons.tbl")
+# Need to standadize the number of edges by the size of the true edge set
+# Otherwise, the numbers are not comparable across all of the networks
+```
+
+```{r}
+ezplot = function(parameter, metric) {
+  
+  pal = wes_palette("Darjeeling1", 4, type = "discrete")
+  
+  # Change the leveling of the parameter of interest for plotting
+  if (parameter == "n_subj") {
+    results = results %>% 
+      mutate(
+        n_subj = factor(n_subj, levels = c(2, 5, 10, 20))
+      )
+  }
+  
+  if (parameter == "n_nodes") {
+    results = results %>% 
+      mutate(
+        n_nodes = factor(n_nodes, levels = c(10, 20, 30))
+      )
+  }
+  
+  if (parameter == "avg_parents") {
+    results = results %>% 
+      mutate(
+        avg_parents = factor(avg_parents, levels = c(1, 2, 4))
+      )
+  }
+  
+  if (parameter == "obs_per_person") {
+    results = results %>% 
+      mutate(
+        obs_per_person = factor(obs_per_person, levels = c(30, 45, 60))
+      )
+  }
+  
+  plot = results %>% 
+    select(!!sym(parameter), contains(metric)) %>% 
+    pivot_longer(
+      !!sym(paste0("naive_", metric)):!!sym(paste0("fw_", metric)),
+      names_to = "network",
+      values_to = "prop"
+    ) %>% 
+    mutate(
+      network = case_when(
+        str_detect(network, "naive") ~ "Naive",
+        str_detect(network, "me") ~ "Mixed-Effect",
+        str_detect(network, "bw") ~ "Backward",
+        str_detect(network, "fw") ~ "Forward"
+      ) %>% factor(., levels = c("Naive", "Mixed-Effect", 
+                                 "Backward", "Forward"))
+    ) %>% 
+    ggplot(aes(x = !!sym(parameter), y = prop, color = network)) + 
+    geom_boxplot() +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5),
+          legend.position = "bottom") + 
+    scale_color_manual(values = pal)
+   
+  plot
+}
+```
+
+# Missing Edges
+
+```{r}
+p = ezplot("n_subj", "missing") +
+  labs(
+    x = "Number of subjects",
+    y = "Proportion of true edges missing",
+    title = "Comparison of missing edges across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "n_subj", "-", "missing.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("n_nodes", "missing") +
+  labs(
+    x = "Number of nodes",
+    y = "Proportion of true edges missing",
+    title = "Comparison of missing edges across structure learning algorithms"
+  )
+
+ggsave(paste0("images/bn-sim-", "n_nodes", "-", "missing.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("avg_parents", "missing") +
+  labs(
+    x = "Average number of parents",
+    y = "Proportion of true edges missing",
+    title = "Comparison of missing edges across structure learning algorithms"
+  )
+
+ggsave(paste0("images/bn-sim-", "avg_parents", "-", "missing.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("obs_per_person", "missing") +
+  labs(
+    x = "Number of observations per person",
+    y = "Proportion of true edges missing",
+    title = "Comparison of missing edges across structure learning algorithms"
+  )
+
+ggsave(paste0("images/bn-sim-", "obs_per_person", "-", "missing.png"),
+         p, width = 6, height = 4)
+```
+
+# Extra Edges
+
+```{r}
+p = ezplot("n_subj", "extra") +
+  labs(
+    x = "Number of subjects",
+    y = "Ratio of extra edges to number of true edges",
+    title = "Comparison of extra-to-true ratios across structure learning algorithms"
+  ) + 
+  ylim(0, 7.5)
+
+ggsave(paste0("images/bn-sim-", "n_subj", "-", "extra.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("n_nodes", "extra") +
+  labs(
+    x = "Number of nodes",
+    y = "Ratio of extra edges to number of true edges",
+    title = "Comparison of extra-to-true ratios across structure learning algorithms"
+  ) + 
+  ylim(0, 7.5)
+
+ggsave(paste0("images/bn-sim-", "n_nodes", "-", "extra.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("avg_parents", "extra") +
+  labs(
+    x = "Average number of parents",
+    y = "Ratio of extra edges to number of true edges",
+    title = "Comparison of extra-to-true ratios across structure learning algorithms"
+  ) + 
+  ylim(0, 7.5)
+
+ggsave(paste0("images/bn-sim-", "avg_parents", "-", "extra.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("obs_per_person", "extra") +
+  labs(
+    x = "Number of observations per person",
+    y = "Ratio of extra edges to number of true edges",
+    title = "Comparison of extra-to-true ratios across structure learning algorithms"
+  ) + 
+  ylim(0, 7.5)
+
+ggsave(paste0("images/bn-sim-", "obs_per_person", "-", "extra.png"),
+         p, width = 6, height = 4)
+```
+
+# Matchflipped Edges
+
+```{r}
+p = ezplot("n_subj", "matchflip") +
+  labs(
+    x = "Number of subjects",
+    y = "Ratio of matchflipped edges to number of true edges",
+    title = "Comparison of matchflip-to-true ratios across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "n_subj", "-", "matchflip.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("n_nodes", "matchflip") +
+  labs(
+    x = "Number of nodes",
+    y = "Ratio of matchflipped edges to number of true edges",
+    title = "Comparison of matchflip-to-true ratios across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "n_nodes", "-", "matchflip.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("avg_parents", "matchflip") +
+  labs(
+    x = "Average number of parents",
+    y = "Ratio of matchflipped edges to number of true edges",
+    title = "Comparison of matchflip-to-true ratios across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "avg_parents", "-", "matchflip.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("obs_per_person", "matchflip") +
+  labs(
+    x = "Number of observations per person",
+    y = "Ratio of matchflipped edges to number of true edges",
+    title = "Comparison of matchflip-to-true ratios across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "obs_per_person", "-", "matchflip.png"),
+         p, width = 6, height = 4)
+```
+
+# Matched Edges
+
+```{r}
+p = ezplot("n_subj", "matched") +
+  labs(
+    x = "Number of subjects",
+    y = "Proportion of true network recovered",
+    title = "Comparison of true network recovery across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "n_subj", "-", "matched.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("n_nodes", "matched") +
+  labs(
+    x = "Number of nodes",
+    y = "Proportion of true network recovered",
+    title = "Comparison of true network recovery across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "n_nodes", "-", "matched.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("avg_parents", "matched") +
+  labs(
+    x = "Average number of parents",
+    y = "Proportion of true network recovered",
+    title = "Comparison of true network recovery across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "avg_parents", "-", "matched.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("obs_per_person", "matched") +
+  labs(
+    x = "Number of observations per person",
+    y = "Proportion of true network recovered",
+    title = "Comparison of true network recovery across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "obs_pers_person", "-", "matched.png"),
+         p, width = 6, height = 4)
+```
+
+# Hamming Distance
+
+```{r}
+p = ezplot("n_subj", "hamming") +
+  labs(
+    x = "Number of subjects",
+    y = "Ratio of SHD to number of true edges",
+    title = "Comparison of SHD-true edge ratios across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "n_subj", "-", "hamming.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("n_nodes", "hamming") +
+  labs(
+    x = "Number of nodes",
+    y = "Ratio of SHD to number of true edges",
+    title = "Comparison of SHD-true edge ratios across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "n_nodes", "-", "hamming.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("avg_parents", "hamming") +
+  labs(
+    x = "Average number of parents",
+    y = "Ratio of SHD to number of true edges",
+    title = "Comparison of SHD-true edge ratios across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "avg_parents", "-", "hamming.png"),
+         p, width = 6, height = 4)
+```
+
+```{r}
+p = ezplot("obs_per_person", "hamming") +
+  labs(
+    x = "Number of observations per person",
+    y = "Ratio of SHD to number of true edges",
+    title = "Comparison of SHD-true edge ratios across structure learning algorithms"
+  ) 
+
+ggsave(paste0("images/bn-sim-", "obs_per_person", "-", "hamming.png"),
+         p, width = 6, height = 4)
+```

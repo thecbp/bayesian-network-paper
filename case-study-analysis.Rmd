@@ -1,0 +1,251 @@
+---
+title: "Bootstrapping Local Distributions"
+author: "Christian Pascual"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(bnlearn)
+library(zoo)
+library(lme4)
+```
+
+```{r}
+s = read_csv("data/stressr01_daily_data_20160914.csv") 
+stress = s %>% 
+  dplyr::select(
+    id, daycount, valid = fitbit_valid_day,
+    exc_min = Exercise_minutes, 
+    exc_any = Exercise_any,
+    stress_exp_am = EMA_AM_ExpStress, exc_exp_am = EMA_AM_ExpExercise,
+    EMA_Day_None_1:EMA_Day_Other_1,
+    EMA_Day_None_2:EMA_Day_Other_2,
+    EMA_Day_None_3:EMA_Day_Other_3,
+    stress_act_pm = EMA_PM_ExpStress, exc_act_pm = EMA_PM_ActExercise,
+    weekend, midday_stress, weartime, 
+    sedtime_ge1min:sedtime_ge120min
+  )
+
+# Checking how many days are in the data for each subject
+# 05/01/2023: Confirmed that most people here have around ~6 months of (observational data)
+days = stress %>% 
+  filter(valid == 1) %>% 
+  group_by(id) %>% 
+  summarize(minday = min(daycount),
+            maxday = max(daycount))
+
+
+# Making it easier to fill in missing values
+ema_replacement_list = list()
+stress_sources = colnames(stress)[c(8:32)]
+for (source in stress_sources) {
+  ema_replacement_list[[source]] = 0
+}
+
+g = stress %>% 
+  dplyr::select(id) %>% 
+  distinct %>% 
+  mutate( G = 1:79 %>% as.factor)
+
+final = stress %>% 
+  filter(valid == 1) %>% 
+  left_join(g, by = "id") %>% 
+  dplyr::select(-id) %>% 
+  replace_na(ema_replacement_list)
+
+final_imputed_v2 = final %>% 
+  mutate(
+    stress_exp_am = na.approx(stress_exp_am),
+    exc_exp_am = na.approx(exc_exp_am),
+    midday_stress = na.approx(midday_stress),
+    stress_act_pm = na.approx(stress_act_pm),
+    exc_act_pm = na.approx(exc_act_pm),
+    weartime = na.approx(weartime),
+    sedtime_ge1min = na.approx(sedtime_ge1min),
+    sedtime_ge5min = na.approx(sedtime_ge5min),
+    sedtime_ge10min = na.approx(sedtime_ge10min),
+    sedtime_ge20min = na.approx(sedtime_ge20min),
+    sedtime_ge30min = na.approx(sedtime_ge30min),
+    sedtime_ge45min = na.approx(sedtime_ge45min),
+    sedtime_ge60min = na.approx(sedtime_ge60min),
+    sedtime_ge90min = na.approx(sedtime_ge90min),
+    sedtime_ge120min = na.approx(sedtime_ge120min),
+    no_stress = if_else(EMA_Day_None_1 == 0 & EMA_Day_None_2 == 0 & EMA_Day_None_3 == 0, 1, 0),
+    source_argue = if_else(EMA_Day_Argue_1 + EMA_Day_Argue_2 + EMA_Day_Argue_3 > 0, 1, 0),
+    source_work = if_else(EMA_Day_WorkStress_1 + EMA_Day_WorkStress_2 + EMA_Day_WorkStress_3 > 0, 1, 0),
+    source_traffic = if_else(EMA_Day_Traffic_1 + EMA_Day_Traffic_2 + EMA_Day_Traffic_3 > 0, 1, 0),
+    source_deadline = if_else(EMA_Day_Deadline_1 + EMA_Day_Deadline_2 + EMA_Day_Deadline_3 > 0, 1, 0),
+    source_bills = if_else(EMA_Day_Bills_1 + EMA_Day_Bills_2 + EMA_Day_Bills_3 > 0, 1, 0),
+    source_late = if_else(EMA_Day_Late_1 + EMA_Day_Late_2 + EMA_Day_Late_3 > 0, 1, 0),
+    source_other = if_else(EMA_Day_Other_1 + EMA_Day_Other_2 + EMA_Day_Other_3 > 0, 1, 0)
+  ) %>% 
+  dplyr::select(
+    -valid, -daycount,
+    -stress_exp_am, -exc_exp_am, -exc_act_pm, 
+    -EMA_Day_None_1:-EMA_Day_Other_1, -EMA_Day_None_2:-EMA_Day_Other_2, -EMA_Day_None_3:-EMA_Day_Other_3,
+    -sedtime_ge5min:-sedtime_ge120min
+  )
+
+# Load in the analyzed DAG and the local distributions
+stress.dag = readRDS("data/05-01-2023-stress-dag-lme-v2.rds")
+locals = arcs(stress.dag) %>% 
+  as_tibble() %>% 
+  filter(from != "G") %>% 
+  arrange(to, from)
+```
+
+```{r}
+# Helper functions
+getform = function(out) {
+  
+  predictors = locals %>% 
+    filter(to == out) %>% 
+    pull(from)
+  
+  ranef_string = paste0("(", c(1, predictors), "|G)", collapse = "+")
+  fstring = paste(out, "~", 
+                  paste(predictors, collapse = "+"), "+", # main effects
+                  paste0("(", c(1, predictors), "|G)", collapse = "+") # random effects
+                  )
+  
+  fstring
+  
+}
+```
+
+```{r}
+outcomes = c("exc_min")
+binary_vars = c("no_stress", "source_argue", "source_bills", "source_deadline",
+                "source_late", "source_other", "source_traffic", "source_work")
+continuous_vars = c("exc_any", "exc_min", "midday_stress", "sedtime_ge1min",
+                    "weartime", "stress_act_pm")
+
+for (outcome in outcomes) {
+  
+  print(paste0("Starting outcome: ", outcome))
+  
+  individual_effects = list()
+  
+  # Get the local distribution formula
+  f = getform(outcome)
+  
+  b = 0
+  successes = 0
+  
+  while (successes < 1000) {
+    
+    b = b + 1
+    print(paste0("Attempt ", b))
+    
+    bs_data = final_imputed_v2 %>%
+      group_by(G) %>%
+      sample_n(size = n(), replace = TRUE) %>%
+      ungroup()
+    
+    if (outcome %in% binary_vars) {
+      
+      family = binomial(link = "logit")
+      ctrl = glmerControl(calc.derivs = FALSE, optCtrl=list(maxfun=3e5))
+      bs_model = glmer(f, data = bs_data, family = family, control = ctrl)
+      
+    } else {
+      
+      ctrl = lmerControl(calc.derivs = FALSE, optCtrl=list(maxfun=3e5))
+      bs_model = bs_model = lmer(f, data = bs_data, control = ctrl)
+      
+    }
+    
+    if (isSingular(bs_model)) { next }
+    
+    fixed = fixef(bs_model)
+    random = ranef(bs_model)[["G"]]
+    
+    individual = tibble(G = 1:79)
+    for (col in names(fixed)) {
+      individual[[col]] = fixed[[col]] + random[[col]]
+    }
+    
+    individual_effects[[b]] = individual
+    
+    successes = sum(!sapply(individual_effects, is.null))
+    print(paste0("  Successful runs: ", successes))
+    
+  }
+  
+  bs = bind_rows(individual_effects)
+  saveRDS(bs, paste0(outcome, "-bs.rds"))
+  
+}
+```
+
+```{r}
+bs_excmin = readRDS("exc_min-bs.rds")
+
+plot_excmin = bs_excmin %>% 
+  pivot_longer(
+    `(Intercept)`:weekend,
+    names_to = "predictor",
+    values_to = "value"
+  ) %>% 
+  group_by(G, predictor) %>% 
+  summarize(
+    median = median(value),
+    q025 = quantile(value, 0.025),
+    q975 = quantile(value, 0.975)
+  ) %>% 
+  mutate(
+    Significance = case_when(
+      q975 < 0 ~ "Negative",
+      q025 > 0 ~ "Positive",
+      TRUE ~ "Non-significant"
+    )
+  )
+```
+
+```{r}
+forest = function(pred) {
+  
+  pretty_pred = case_when(
+    pred == "(Intercept)" ~ "intercept",
+    pred == "exc_any" ~ "exercise engagement",
+    pred == "no_stress" ~ "reporting no stress",
+    pred == "sedtime_ge1min" ~ "sedentary time",
+    pred == "weartime" ~ "weartime",
+    pred == "weekend" ~ "weekend",
+  )
+  
+  plot_excmin %>% 
+    filter(predictor == pred) %>% 
+    arrange(q025) %>%
+    mutate(
+      ID = factor(G, levels = G)
+    ) %>% 
+    ggplot(aes(x = ID, y = median, ymin = q025, ymax = q975, color = Significance)) +
+    geom_pointrange(size = 0.4) +
+    geom_hline(aes(yintercept = 0), color = "black") +
+    theme_minimal() +
+    theme(legend.position = "bottom",
+          axis.text.x = element_blank(),
+          plot.title = element_text(hjust = 0.5)) +
+    labs(
+      y = "Effect",
+      x = "Subject ID",
+      title = paste0("Forest plot for ", pretty_pred, " association with exercise minutes")
+    ) +
+    scale_color_manual(values = c("Negative" = "#FF0000",
+                                  "Non-significant" = "#CBB4d2",
+                                  "Positive" = "#3406f9")) 
+  
+}
+
+forest("(Intercept)")
+forest("exc_any")
+forest("no_stress")
+forest("sedtime_ge1min")
+forest("weartime")
+forest("weekend")
+```
+
+
